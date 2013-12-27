@@ -10,7 +10,13 @@ upstart (1.5-0ubuntu7.2pexip1) pexip; urgency=low
         - Conditionally run tests in a pty for build environments such as
           modern versions of sbuild(1) that do not provide a controlling
           terminal (sbuild) (LP: #888910).
-
+  * Backport upstream packaging changesets 1416,1417,1418:
+      * http://bazaar.launchpad.net/~ubuntu-branches/ubuntu/trusty/upstart/trusty/revision/1416
+      * http://bazaar.launchpad.net/~ubuntu-branches/ubuntu/trusty/upstart/trusty/revision/1417
+      * http://bazaar.launchpad.net/~ubuntu-branches/ubuntu/trusty/upstart/trusty/revision/1418
+        - Call autoreconf so we can use the same packaging for snapshots as for
+          release tarballs. Add depends on dh-autoreconf and autopoint.
+ 
  -- John-Mark Bell <jmb@pexip.com>  Fri, 27 Dec 2013 12:58:49 +0000
 
 upstart (1.5-0ubuntu7.2) precise-proposed; urgency=low
