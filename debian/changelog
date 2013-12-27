@@ -1,6 +1,15 @@
 upstart (1.5-0ubuntu7.2pexip1) pexip; urgency=low
 
   * Prepare Pexip packaging
+  * Backport upstream changeset 1381:
+      * http://bazaar.launchpad.net/~upstart-devel/upstart/trunk/revision/1381
+      * init/Makefile.am: test_job_process must now be linked to the 'util'
+        library for pty helper functionality.
+      * init/tests/test_job_process.c:
+        - Compiler appeasement.
+        - Conditionally run tests in a pty for build environments such as
+          modern versions of sbuild(1) that do not provide a controlling
+          terminal (sbuild) (LP: #888910).
 
  -- John-Mark Bell <jmb@pexip.com>  Fri, 27 Dec 2013 12:58:49 +0000
 
