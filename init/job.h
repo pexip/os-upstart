@@ -66,6 +66,7 @@ typedef enum job_goal {
 typedef enum job_state {
 	JOB_WAITING,
 	JOB_STARTING,
+	JOB_SECURITY,
 	JOB_PRE_START,
 	JOB_SPAWNED,
 	JOB_POST_START,
@@ -103,6 +104,9 @@ typedef enum trace_state {
  * @start_env: environment to use next time the job is started,
  * @stop_env: environment to add for the next pre-stop script,
  * @stop_on: event operator expression that can stop this job.
+ * @fds: array of file descriptors associated with events in parent
+ *       JobClasses @start_on condition,
+ * @num_fds: number of elements in @fds,
  * @pid: current process ids,
  * @blocker: emitted event we're waiting to finish,
  * @blocking: list of events we're blocking from finishing,
@@ -136,8 +140,8 @@ typedef struct job {
 	char          **stop_env;
 	EventOperator  *stop_on;
 
-	int *fds;
-	size_t num_fds;
+	int            *fds;
+	size_t          num_fds;
 
 	pid_t          *pid;
 	Event          *blocker;
@@ -162,7 +166,7 @@ typedef struct job {
 NIH_BEGIN_EXTERN
 
 Job *       job_new             (JobClass *class, const char *name)
-	__attribute__ ((warn_unused_result, malloc));
+	__attribute__ ((warn_unused_result));
 void        job_register        (Job *job, DBusConnection *conn, int signal);
 
 void        job_change_goal     (Job *job, JobGoal goal);
@@ -173,8 +177,7 @@ JobState    job_next_state      (Job *job);
 void        job_failed          (Job *job, ProcessType process, int status);
 void        job_finished        (Job *job, int failed);
 
-Event      *job_emit_event      (Job *job)
-	__attribute__ ((malloc));
+Event      *job_emit_event      (Job *job);
 
 
 const char *job_name            (Job *job);
@@ -193,6 +196,8 @@ int         job_stop            (Job *job, NihDBusMessage *message, int wait)
 	__attribute__ ((warn_unused_result));
 int         job_restart         (Job *job, NihDBusMessage *message, int wait)
 	__attribute__ ((warn_unused_result));
+int         job_reload          (Job *job, NihDBusMessage *message)
+	__attribute__ ((warn_unused_result));
 
 int         job_get_name        (Job *job, NihDBusMessage *message,
 				 char **name)
@@ -206,6 +211,21 @@ int         job_get_state       (Job *job, NihDBusMessage *message,
 
 int         job_get_processes   (Job *job, NihDBusMessage *message,
 				 JobProcessesElement ***processes)
+	__attribute__ ((warn_unused_result));
+
+json_object *job_serialise (const Job *job);
+Job *job_deserialise (JobClass *parent, json_object *json);
+
+json_object *job_serialise_all (const NihHash *jobs)
+	__attribute__ ((warn_unused_result));
+
+int         job_deserialise_all (JobClass *parent, json_object *json)
+	__attribute__ ((warn_unused_result));
+
+Job *       job_find            (const Session *session,
+				 JobClass       *class,
+				 const char     *job_class,
+				 const char     *job_name)
 	__attribute__ ((warn_unused_result));
 
 NIH_END_EXTERN
