@@ -1,6 +1,10 @@
 upstart (1.11-5pexip1) pexip; urgency=low
 
   * Migrate to Jessie
+  * debian/control: set Priority: required
+  * debian/conf/dbus-reconnect.conf: Drop - not needed
+  * debian/upstart.apport: Drop - not needed
+  * debian/rules, debian/upstart.dirs: Follow removal of upstart.apport
 
  -- John-Mark Bell <jmb@pexip.com>  Thu, 30 Mar 2017 16:59:08 +0100
 
