@@ -857,7 +857,6 @@ test_write_runlevel (void)
 		gettimeofday (&tv, NULL);
 		record.ut_tv.tv_sec = tv.tv_sec;
 		record.ut_tv.tv_usec = tv.tv_usec;
-
 		utmpxname (utmp_file);
 
 		setutxent ();
@@ -865,6 +864,14 @@ test_write_runlevel (void)
 		endutxent ();
 
 		updwtmpx (wtmp_file, &record);
+
+		/* utmp/wtmp records do not have nanosecond resolution
+		 * yet the tests expect time to lapse, but it might not
+		 * on very, very fast machines.
+		 * https://jenkins.qa.ubuntu.com/view/Raring/view/AutoPkgTest/job/raring-adt-upstart/
+		 * Is there a better way to fix the tests?
+		 */
+		usleep (200);
 
 		ret = utmp_write_runlevel (utmp_file, wtmp_file, '5', '2');
 
@@ -963,6 +970,13 @@ test_write_runlevel (void)
 
 		updwtmpx (wtmp_file, &record);
 
+		/* Allow time to pass so that the timestamp for the new
+		 * record is guaranteed to be different to the existing
+		 * timestamp allowing the test to detect if a record
+		 * other than the artificially-created existing one was 
+		 * read back.
+		 */
+		usleep (200);
 
 		ret = utmp_write_runlevel (utmp_file, wtmp_file, '2', 'S');
 
@@ -1070,6 +1084,13 @@ test_write_runlevel (void)
 
 		updwtmpx (wtmp_file, &record);
 
+		/* Allow time to pass so that the timestamp for the new
+		 * record is guaranteed to be different to the existing
+		 * timestamp allowing the test to detect if a record
+		 * other than the artificially-created existing one was 
+		 * read back.
+		 */
+		usleep (200);
 
 		ret = utmp_write_runlevel (utmp_file, wtmp_file, '2', 'S');
 
@@ -1341,6 +1362,14 @@ test_write_shutdown (void)
 		endutxent ();
 
 		updwtmpx (wtmp_file, &record);
+
+		/* Allow time to pass so that the timestamp for the new
+		 * record is guaranteed to be different to the existing
+		 * timestamp allowing the test to detect if a record
+		 * other than the artificially-created existing one was 
+		 * read back.
+		 */
+		usleep (200);
 
 		ret = utmp_write_shutdown (utmp_file, wtmp_file);
 

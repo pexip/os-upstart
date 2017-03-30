@@ -31,7 +31,6 @@
 #include "session.h"
 #include "conf.h"
 #include "paths.h"
-#include <sys/prctl.h>
 
 static int  log_file_open   (Log *log);
 static int  log_file_write  (Log *log, const char *buf, size_t len);
@@ -48,8 +47,13 @@ static int log_flushed = 0;
 /**
  * log_unflushed_files:
  *
- * List of known sources of configuration; each item is an
- * NihListEntry.
+ * List of NihListEntry objects containing Log objects which are no
+ * longer associated with Job processes.
+ *
+ * All the entries in the list contain unflushed Log data.
+ *
+ * Used to capture job process output early in the boot process for
+ * jobs that end before the log partition is mounted and writeable.
  **/
 NihList *log_unflushed_files = NULL;
 
@@ -393,7 +397,7 @@ log_io_error_handler (Log *log, NihIo *io)
  *
  * Opens log file associated with @log if not already open.
  *
- * Returns 0 on success, -1 on failure.
+ * Returns: 0 on success, -1 on failure.
  **/
 static int
 log_file_open (Log *log)
@@ -505,7 +509,7 @@ log_file_open (Log *log)
  *   a corrupted log file should space later become
  *   available.
  *
- * Returns 0 on success, -1 on failure.
+ * Returns: 0 on success, -1 on failure.
  **/
 static int
 log_file_write (Log *log, const char *buf, size_t len)
@@ -638,6 +642,8 @@ log_read_watch (Log *log)
 		if (nih_io_buffer_resize (io->recv_buf, LOG_READ_SIZE) < 0)
 			break;
 
+		errno = 0;
+
 		/* Append to buffer */
 		len = read (io->watch->fd,
 				io->recv_buf->buf + io->recv_buf->len,
@@ -680,22 +686,26 @@ log_read_watch (Log *log)
 		 * causes the loop to be exited.
 		 */
 		if (len <= 0) {
+			if (saved == EINTR)
+				continue;
+
+			/* Job process has ended and we've drained all the data the job
+			 * produced, so remote end must have closed.
+			 *
+			 * This cannot be handled entirely by log_io_error_handler()
+			 * since the job may produce some output prior to disks being
+			 * writeable, then end without producing further output.
+			 * In this scenario the error handler is never called.
+			 *
+			 */
+			if (saved && saved != EAGAIN && saved != EWOULDBLOCK)
+				log->remote_closed = 1;
+
 			close (log->fd);
 			log->fd = -1;
 			break;
 		}
 	}
-
-	/* Job process has ended and we've drained all the data the job
-	 * produced, so remote end must have closed.
-	 *
-	 * This cannot be handled entirely by log_io_error_handler()
-	 * since the job may produce some output prior to disks being
-	 * writeable, then end without producing further output.
-	 * In this scenario the error handler is never called.
-	 *
-	 */
-	log->remote_closed = 1;
 }
 
 /**
@@ -786,6 +796,11 @@ log_clear_unflushed (void)
 		elem = (NihListEntry *)iter;
 		log = elem->data;
 
+		/* To be added to this list, log should have been
+		 * detached from its parent job.
+		 */
+		nih_assert (log->detached);
+
 		/* We expect 'an' error (as otherwise why would the log be
 		 * in this list?), but don't assert EROFS specifically
 		 * as a precaution (since an attempt to flush the log at
@@ -793,9 +808,19 @@ log_clear_unflushed (void)
 		 */
 		nih_assert (log->open_errno);
 
-		nih_assert (log->unflushed->len);
-		nih_assert (log->remote_closed);
-		nih_assert (log->detached);
+		if (log->remote_closed) {
+			/* Parent job has ended and unflushed data
+			 * exists.
+			 */
+			nih_assert (log->unflushed->len);
+		} else {
+			/* Parent job itself has ended, but job spawned one or
+			 * more processes that are still running and
+			 * which might still produce output (the error
+			 * handler has therefore not been called).
+			 */
+			nih_assert (log->io);
+		}
 
 		if (log_file_open (log) != 0)
 			return -1;
@@ -803,10 +828,208 @@ log_clear_unflushed (void)
 		if (log_file_write (log, NULL, 0) < 0)
 			return -1;
 
+		/* This will handle any remaining unflushed log data */
 		nih_free (log);
 	}
 
 	log_flushed = 1;
 
 	return 0;
+}
+
+/**
+ * log_serialise:
+ * @log: log to serialise.
+ *
+ * Convert @log into a JSON representation for serialisation.
+ * Caller must free returned value using json_object_put().
+ *
+ * Returns: JSON-serialised Log object, or NULL on error.
+ **/
+json_object *
+log_serialise (Log *log)
+{
+	json_object     *json;
+	nih_local char  *unflushed_hex = NULL;
+
+	json = json_object_new_object ();
+	if (! json)
+		return NULL;
+
+	if (! log || (! log->io && log->unflushed && ! log->unflushed->len))
+		goto placeholder;
+
+	/* Attempt to flush any cached data */
+	if (log->unflushed && log->unflushed->len) {
+		/* Don't check return values since if this fails and
+		 * unflushed data remains, we encode it below.
+		 */
+		if (log->fd < 0)
+			(void)log_file_open (log);
+		if (log->fd != -1)
+			(void)log_file_write (log, NULL, 0);
+	}
+
+	/* Job associated with log has ended. If we failed to write
+	 * unflushed data above, it will now be lost as we cannot
+	 * create a valid serialisation without an associated NihIo.
+	 */
+	if (! log->io)
+		goto placeholder;
+
+	if (! state_set_json_int_var_from_obj (json, log, fd))
+		goto error;
+
+	nih_assert (log->io->watch);
+
+	if (! state_set_json_int_var (json, "io_watch_fd", log->io->watch->fd))
+		goto error;
+
+	if (! state_set_json_string_var_from_obj (json, log, path))
+		goto error;
+
+	/* log->io itself is not encoded */
+
+	if (! state_set_json_int_var_from_obj (json, log, uid))
+		goto error;
+
+	/* Encode unflushed data as hex to ensure any embedded
+	 * nulls are handled.
+	 */
+	if (log->unflushed && log->unflushed->len) {
+		unflushed_hex = state_data_to_hex (NULL,
+				log->unflushed->buf,
+				log->unflushed->len);
+
+		if (! unflushed_hex)
+			goto error;
+
+		if (! state_set_json_string_var (json, "unflushed", unflushed_hex))
+			goto error;
+	}
+
+	if (! state_set_json_int_var_from_obj (json, log, detached))
+		goto error;
+
+	if (! state_set_json_int_var_from_obj (json, log, remote_closed))
+		goto error;
+
+	if (! state_set_json_int_var_from_obj (json, log, open_errno))
+		goto error;
+
+	return json;
+
+placeholder:
+	/* Create a "placeholder" log object for non-existent
+	 * log objects and for those that are no longer usable.
+	 */
+	if (! state_set_json_string_var (json, "path", NULL))
+		goto error;
+	return json;
+
+error:
+	json_object_put (json);
+	return NULL;
+}
+
+/**
+ * log_deserialise:
+ * @json: JSON-serialised Log object to deserialise.
+ *
+ * Convert @json into a Log object.
+ *
+ * Returns: Log object, or NULL on error.
+ **/
+Log *
+log_deserialise (const void *parent,
+		 json_object *json)
+{
+	Log             *log;
+	nih_local char  *unflushed_hex = NULL;
+	nih_local char  *unflushed = NULL;
+	int              ret;
+	size_t           len;
+	json_object     *json_unflushed;
+	nih_local char  *path = NULL;
+	int              io_watch_fd = -1;
+	uid_t            uid = (uid_t)-1;
+
+	nih_assert (json);
+
+	log_unflushed_init ();
+
+	if (! state_check_json_type (json, object))
+		return NULL;
+
+	if (! state_get_json_string_var (json, "path", NULL, path))
+		return NULL;
+
+	if (! path) {
+		/* placeholder log object */
+		return NULL;
+	}
+
+	if (! state_get_json_int_var (json, "io_watch_fd", io_watch_fd))
+		return NULL;
+
+	nih_assert (io_watch_fd != -1);
+
+	/* re-apply CLOEXEC flag to stop job fd being leaked to children */
+	if (state_toggle_cloexec (io_watch_fd, TRUE) < 0)
+		return NULL;
+
+	if (! state_get_json_int_var (json, "uid", uid))
+		return NULL;
+
+	log = log_new (parent, path, io_watch_fd, uid);
+	if (! log)
+		return NULL;
+
+	if (! state_get_json_int_var_to_obj (json, log, fd))
+		goto error;
+
+	/* Re-apply CLOEXEC flag to stop log file fd being leaked to children.
+	 *
+	 * Note we discard return value since if this fails,
+	 * we would never close the fd.
+	 */
+	if (log->fd != -1)
+		(void)state_toggle_cloexec (log->fd, TRUE);
+
+	log->unflushed = nih_io_buffer_new (log);
+	if (! log->unflushed)
+		goto error;
+
+	json_unflushed = json_object_object_get (json, "unflushed");
+	if (json_unflushed) {
+		if (! state_get_json_string_var_strict (json, "unflushed", NULL, unflushed_hex))
+			goto error;
+
+		ret = state_hex_to_data (NULL,
+				unflushed_hex,
+				strlen (unflushed_hex),
+				&unflushed,
+				&len);
+
+		if (ret < 0)
+			goto error;
+
+		if (nih_io_buffer_push (log->unflushed, unflushed, len) < 0)
+			goto error;
+	}
+
+	if (! state_get_json_int_var_to_obj (json, log, detached))
+		goto error;
+
+	if (! state_get_json_int_var_to_obj (json, log, remote_closed))
+		goto error;
+
+	if (! state_get_json_int_var_to_obj (json, log, open_errno))
+		goto error;
+
+	return log;
+
+error:
+	nih_free (log);
+	return NULL;
 }

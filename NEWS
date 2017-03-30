@@ -1,3 +1,116 @@
+1.11  2013-11-14 "Quoi de neuf?"
+
+	* Add '--no-dbus' command-line option for the init(8) daemon (allowing
+	  event propagation to the Session Init via the upstart-event-bridge(8) to
+	  be disabled).
+	* Serialise Session Init job environment table on re-exec (LP: #1238078).
+	* upstart-{dbus,socket}-bridge(8): Don't clobber existing PATH (LP: #1234898).
+	* upstart-file-bridge(8):
+	  - Allow watching for directory creation (LP: #1221466).
+	  - Reduce default output.
+	* upstart-local-bridge(8): Handle arbitrary numbers of pairs and additional
+	  checks on input validity (LP: #1234898).
+	* Improved Session Init shutdown speed (LP: #1227212).
+	* New configure options: '--disable-local-bridge', '--disable-socket-bridge'.
+	* Added upstart-file-bridge(8) and Session Init re-exec integration tests.
+	* Retain umask for Session Init (LP: #1240686).
+	* Make Session Init connect to D-Bus Session Bus on request
+	  (LP: #1203595, #1235649)
+	* Improved build-time ABI compliance checking.
+	* Make unit tests produce TAP-format test output (more verbose).
+	* Doc updates and lots of test refinements.
+
+1.10  2013-08-23 "Swim to the buoy"
+
+	* upstart-local-bridge: New bridge for starting jobs on local
+	  socket connections.
+	* upstart-dconf-bridge: New bridge for Session Inits.
+	* upstart-dbus-bridge: New '--bus-name' option to allow bus name
+	  variable to be included in dbus-event(7).
+	* New "reload signal" stanza to allow jobs to specify a custom signal
+	  that will be sent to the main process (rather than the default
+	  SIGHUP).
+	* Inclusion of Session Init sample jobs.
+	* Re-exec fixes for handling chroot sessions.
+	* Shutdown fix for Session Inits.
+	* New python3 module and accompanying integration test suite for
+	  testing Upstart running as PID 1 and as a Session Init
+	  (priveleged and non-privileged).
+
+1.9.1  2013-07-04 "The all-inclusive deal"
+
+	* Fix respawn behaviour regression (introduced in version 1.8) affecting
+	  jobs which also specify shell meta-characters in the exec stanza
+	  (LP: #1181789).
+	* Fix common bug which could cause a bridge to crash (LP: #1197225).
+	* Various fixes for libupstart.
+	* initctl2dot: Layout improvements.
+
+1.9  2013-06-28 "This village isn't even on the map"
+
+	* Apparmor support added by means of two new stanzas: 'apparmor load'
+	  and 'apparmor switch' (thanks Marc Deslauriers).
+	* Stateful re-exec: now serialises all objects, not just the minimum set.
+	* Allow inherited environment variables to be unset for Session Inits.
+	* Ability to specify multiple configuration directories when running as
+	  a Session Init.
+	* libupstart: Client library for communicating with Upstart.
+	* upstart-dbus-bridge: New bridge to allow jobs to react to D-Bus signals.
+	* The usual round of fixes and doc improvements.
+
+1.8  2013-03-22 "Scone + Radish = Gherkin?"
+
+	* upstart-file-bridge: New bridge to allow jobs to react to
+	  file, directory and file glob events (create/modify/delete).
+	* upstart-monitor: Simple cli/gui tool that shows event flows.
+
+1.7  2013-03-04 "We've all got one now"
+
+	* New initctl commands: set-env, unset-env, get-env, list-env,
+	  reset-env, list-sessions (all except last with corresponding
+	  D-Bus methods).
+	* New D-Bus-only signals EventEmitted, Restarted, and EndSession method.
+	* Ability to run with PID >1 to allow Upstart to manage a user session.
+	  Running Upstart as a 'Session Init' in this way provides features
+	  above and beyond those provided by the original User Jobs such that
+	  the User Job facility has been removed entirely: to migrate from
+	  a system using User Jobs, simply ensure the user session is started with
+	  'init --user'.
+	* New upstart-event-bridge bridge which proxies system-level events down
+	  to Session Inits, allowing users jobs to react to udev events.
+	* Ability to read job configuration and override files from multiple
+	  freedesktop-compliant locations (Session Init only).
+	* Ability to shutdown both via a system shutdown request and via a user
+	  logout request (Session Init only).
+
+1.6.1  2012-12-07 "It glows in the dark"
+
+	* Improved re-exec performance.
+	* Minor logger fixes for unflushed data.
+	* Handle re-exec scenario when requested from within a chroot.
+	* Minor serialisation data format change to handle chroots and
+	  user sessions.
+	* Added extra re-exec tests including explicit upgrade tests reading
+	  from pre-prepared JSON data files.
+	* Make jobs running within a chroot log their output within the chroot.
+	* Added "Restart" D-Bus method.
+	* Changed 'telinit u' to use "Restart" D-Bus method rather than
+	  sending SIGTERM to play nicely when busybox(1) is init.
+	* Added "GetState" D-Bus method allowing current serialised internal state
+	  to be queried.
+
+1.6  2012-11-15 "The turbine, the fish and the glass partition"
+
+	* 'telinit u' now performs a stateful re-exec, allowing Upstart
+	  to continue to supervise jobs after an upgrade of either
+	  itself, or any of its dependent libraries. Adds dependency
+	  on libjson (JSON-C).
+	* Added initramfs-less boot support.
+	* Allow tests to work in sbuild environment.
+	* Improved error handling.
+	* Fixed crasher if 'kill signal' specified as a particular numeric.
+	* Documentation fixes.
+
 1.5  2012-03-22 "Birdsong"
 
 	* Lots of "console log" improvements (and new tests).

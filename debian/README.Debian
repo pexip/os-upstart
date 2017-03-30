@@ -16,9 +16,6 @@ Where are initscripts installed?
 This has not changed, they are installed in /etc/init.d.  See
 /etc/init.d/README.
 
-Important system jobs are no longer shipped as initscripts, but as
-upstart jobs.  These are installed in /etc/init
-
 
 How are initscripts started and stopped?
 ----------------------------------------
@@ -52,16 +49,11 @@ directly.  See telinit(8).
 How do I change the default runlevel?
 -------------------------------------
 
-If you have an /etc/inittab file, edit it.  Locate the following line:
+Edit the /etc/inittab file.  Locate, or write, the following line:
 
     id:N:initdefault:
 
 Where N is the default runlevel, change this to match.
-
-Most people won't have that file, you can edit /etc/init/rc-sysinit.conf
-and change the following line:
-
-    env DEFAULT_RUNLEVEL=2
 
 
 How do I shutdown the machine?
@@ -156,23 +148,47 @@ How do I add a serial console?
 See "How do I increase the number of gettys?"
 
 
-How can I see boot messages on the console?
--------------------------------------------
-
-This is nothing to do with upstart, but I'll answer this anyway.
-Remove "quiet" from the kernel command-line.
-
-To make this permanent, edit /boot/grub/menu.lst and edit the line
-that begins "# defoptions=" (yes, it looks like a comment).
-
-This will change both usplash and the LSB init logging.
-
-
 Upstart isn't working, how do I debug it?
 -----------------------------------------
 
 Add "--debug" to the kernel command-line, and be sure to remove "quiet"
-and "splash".  You'll now see debugging messages as upstart works.
+and "splash" if existent.  You'll now see debugging messages as upstart
+works.
+
+If you are using an initramfs generator other than initramfs-tools you
+should use this option very carefully. There are for example known
+problems with yaird, which doesn't correctly pass the --debug option to
+init and as a consequence leads to a kernel panic. For more details
+please see bug #416927.
+
+
+Upstart isn't working, how can I rescue my system?
+--------------------------------------------------
+
+Here's a quick guide to rescuing your system:
+
+ 1. Edit the kernel command-line, remove "quiet" and "splash" if
+    existent, add "init=/bin/bash".
+
+    The machine will boot into a root shell.
+
+ 2. Run "/etc/init.d/rcS"
+
+    The machine will set up the basic necessities such as hardware
+    and networking.
+
+ 3. Ensure that upstart is properly installed
+
+    Check if all files are installed in /etc/init. If not, reinstall the
+    upstart package.
+
+ 5. Check that there are now files in /etc/init
+
+ 6. Run "sync" and "reboot -f"
+
+    The machine will now reboot.
+
+Hopefully your machine should now boot normally.
 
 
 Can I query upstart for a list of jobs?

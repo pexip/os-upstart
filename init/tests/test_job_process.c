@@ -60,8 +60,7 @@
 #include "blocked.h"
 #include "conf.h"
 #include "errors.h"
-#include "test_util.h"
-
+#include "test_util_common.h"
 
 #define EXPECTED_JOB_LOGDIR       "/var/log/upstart"
 #define TEST_SHELL                "/bin/sh"
@@ -82,6 +81,14 @@
 
 /* number of iterations to perform to check file contents */
 #define MAX_ITERATIONS            5
+
+/**
+ * SHELL_CHARS:
+ *
+ * This is the list of characters that, if encountered in a process, cause
+ * it to always be run with a shell.
+ **/
+#define SHELL_CHARS "~`!$^&*()=|\\{}[];\"'<>?"
 
 /**
  * CHECK_FILE_EQ:
@@ -129,9 +136,11 @@ enum child_tests {
 	TEST_ENVIRONMENT,
 	TEST_OUTPUT,
 	TEST_OUTPUT_WITH_STOP,
-	TEST_SIGNALS,
 	TEST_FDS
 };
+
+
+pid_t pty_child_pid;
 
 static char *argv0;
 
@@ -170,10 +179,8 @@ child (enum child_tests  test,
        const char       *filename)
 {
 	FILE  *out;
-	FILE  *in;
 	char   tmpname[PATH_MAX], path[PATH_MAX];
 	int    i;
-	char   buffer[1024];
 	int    ret = EXIT_SUCCESS;
 
 	strcpy (tmpname, filename);
@@ -205,6 +212,10 @@ child (enum child_tests  test,
 		fprintf (out, "wd: %s\n", path);
 		break;
 	case TEST_ENVIRONMENT:
+		/* guarantee output ordering */
+		for (i = 0; environ[i]; i++);
+		qsort (environ, i, sizeof (environ[0]), strcmp_compar);
+
 		for (char **env = environ; *env; env++)
 			fprintf (out, "%s\n", *env);
 		break;
@@ -233,21 +244,6 @@ child (enum child_tests  test,
 
 		fprintf(stdout, "ended\n");
 		fflush (NULL);
-		break;
-	case TEST_SIGNALS:
-		/* Write signal stats for child process to stdout */
-		in = fopen("/proc/self/status", "r");
-		if (! in) {
-			abort();
-		}
-
-		while (fgets (buffer, sizeof (buffer), in) != NULL) {
-			if (strstr (buffer, "SigBlk:") == buffer ||
-					strstr (buffer, "SigIgn:") == buffer)
-				fputs (buffer, out);
-		}
-
-		fclose(in);
 		break;
 	case TEST_FDS:
 		/* Establish list of open (valid) and closed (invalid)
@@ -513,6 +509,7 @@ test_run (void)
 
 		waitpid (job->pid[PROCESS_MAIN], NULL, 0);
 		TEST_EQ (stat (filename, &statbuf), 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		/* Filename should contain the pid */
 		output = fopen (filename, "r");
@@ -657,6 +654,7 @@ test_run (void)
 			class = job_class_new (NULL, "test", NULL);
 			class->console = CONSOLE_NONE;
 			class->process[PROCESS_MAIN] = process_new (class);
+			class->process[PROCESS_MAIN]->script = FALSE;
 			class->process[PROCESS_MAIN]->command = nih_sprintf (
 				class->process[PROCESS_MAIN],
 				"%s %d %s", argv0, TEST_ENVIRONMENT, filename);
@@ -686,10 +684,12 @@ test_run (void)
 		 * the job.
 		 */
 		output = fopen (filename, "r");
-		TEST_FILE_EQ (output, "FOO=BAR\n");
 		TEST_FILE_EQ (output, "BAR=BAZ\n");
-		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
+		TEST_FILE_EQ (output, "FOO=BAR\n");
+		if (job->class->process[PROCESS_MAIN]->script || strpbrk (job->class->process[PROCESS_MAIN]->command, SHELL_CHARS))
+			TEST_FILE_EQ (output, "PWD=/\n");
 		TEST_FILE_EQ (output, "UPSTART_INSTANCE=\n");
+		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
 		TEST_FILE_EQ (output, "UPSTART_NO_SESSIONS=1\n");
 		TEST_FILE_END (output);
 		fclose (output);
@@ -710,6 +710,7 @@ test_run (void)
 			class = job_class_new (NULL, "test", NULL);
 			class->console = CONSOLE_NONE;
 			class->process[PROCESS_MAIN] = process_new (class);
+			class->process[PROCESS_MAIN]->script = FALSE;
 			class->process[PROCESS_MAIN]->command = nih_sprintf (
 				class->process[PROCESS_MAIN],
 				"%s %d %s", argv0, TEST_ENVIRONMENT, filename);
@@ -739,10 +740,12 @@ test_run (void)
 		 * the job.
 		 */
 		output = fopen (filename, "r");
-		TEST_FILE_EQ (output, "FOO=BAR\n");
 		TEST_FILE_EQ (output, "BAR=BAZ\n");
-		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
+		TEST_FILE_EQ (output, "FOO=BAR\n");
+		if (job->class->process[PROCESS_MAIN]->script || strpbrk (job->class->process[PROCESS_MAIN]->command, SHELL_CHARS))
+			TEST_FILE_EQ (output, "PWD=/\n");
 		TEST_FILE_EQ (output, "UPSTART_INSTANCE=foo\n");
+		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
 		TEST_FILE_EQ (output, "UPSTART_NO_SESSIONS=1\n");
 		TEST_FILE_END (output);
 		fclose (output);
@@ -764,6 +767,7 @@ test_run (void)
 			class = job_class_new (NULL, "test", NULL);
 			class->console = CONSOLE_NONE;
 			class->process[PROCESS_PRE_STOP] = process_new (class);
+			class->process[PROCESS_PRE_STOP]->script = FALSE;
 			class->process[PROCESS_PRE_STOP]->command = nih_sprintf (
 				class->process[PROCESS_PRE_STOP],
 				"%s %d %s", argv0, TEST_ENVIRONMENT, filename);
@@ -793,11 +797,13 @@ test_run (void)
 		 * the job.
 		 */
 		output = fopen (filename, "r");
-		TEST_FILE_EQ (output, "FOO=SMACK\n");
 		TEST_FILE_EQ (output, "BAR=BAZ\n");
 		TEST_FILE_EQ (output, "CRACKLE=FIZZ\n");
-		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
+		TEST_FILE_EQ (output, "FOO=SMACK\n");
+		if (job->class->process[PROCESS_PRE_STOP]->script || strpbrk (job->class->process[PROCESS_PRE_STOP]->command, SHELL_CHARS))
+			TEST_FILE_EQ (output, "PWD=/\n");
 		TEST_FILE_EQ (output, "UPSTART_INSTANCE=\n");
+		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
 		TEST_FILE_EQ (output, "UPSTART_NO_SESSIONS=1\n");
 		TEST_FILE_END (output);
 		fclose (output);
@@ -819,6 +825,7 @@ test_run (void)
 			class = job_class_new (NULL, "test", NULL);
 			class->console = CONSOLE_NONE;
 			class->process[PROCESS_POST_STOP] = process_new (class);
+			class->process[PROCESS_POST_STOP]->script = FALSE;
 			class->process[PROCESS_POST_STOP]->command = nih_sprintf (
 				class->process[PROCESS_POST_STOP],
 				"%s %d %s", argv0, TEST_ENVIRONMENT, filename);
@@ -848,11 +855,13 @@ test_run (void)
 		 * the job.
 		 */
 		output = fopen (filename, "r");
-		TEST_FILE_EQ (output, "FOO=SMACK\n");
 		TEST_FILE_EQ (output, "BAR=BAZ\n");
 		TEST_FILE_EQ (output, "CRACKLE=FIZZ\n");
-		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
+		TEST_FILE_EQ (output, "FOO=SMACK\n");
+		if (job->class->process[PROCESS_POST_STOP]->script || strpbrk (job->class->process[PROCESS_POST_STOP]->command, SHELL_CHARS))
+			TEST_FILE_EQ (output, "PWD=/\n");
 		TEST_FILE_EQ (output, "UPSTART_INSTANCE=\n");
+		TEST_FILE_EQ (output, "UPSTART_JOB=test\n");
 		TEST_FILE_EQ (output, "UPSTART_NO_SESSIONS=1\n");
 		TEST_FILE_END (output);
 		fclose (output);
@@ -942,6 +951,7 @@ test_run (void)
 			class = job_class_new (NULL, "test", NULL);
 			class->console = CONSOLE_NONE;
 			class->process[PROCESS_MAIN] = process_new (class);
+			class->process[PROCESS_MAIN]->script = FALSE;
 			class->process[PROCESS_MAIN]->command = "true";
 
 			job = job_new (class, "");
@@ -981,6 +991,7 @@ test_run (void)
 			class = job_class_new (NULL, "test", NULL);
 			class->console = CONSOLE_NONE;
 			class->process[PROCESS_PRE_START] = process_new (class);
+			class->process[PROCESS_PRE_START]->script = FALSE;
 			class->process[PROCESS_PRE_START]->command = "true";
 
 			job = job_new (class, "");
@@ -1022,6 +1033,7 @@ test_run (void)
 			class->console = CONSOLE_NONE;
 			class->expect = EXPECT_DAEMON;
 			class->process[PROCESS_MAIN] = process_new (class);
+			class->process[PROCESS_MAIN]->script = FALSE;
 			class->process[PROCESS_MAIN]->command = "true";
 
 			job = job_new (class, "");
@@ -1072,6 +1084,7 @@ test_run (void)
 			class->console = CONSOLE_NONE;
 			class->expect = EXPECT_FORK;
 			class->process[PROCESS_MAIN] = process_new (class);
+			class->process[PROCESS_MAIN]->script = FALSE;
 			class->process[PROCESS_MAIN]->command = "true";
 
 			job = job_new (class, "");
@@ -1122,6 +1135,7 @@ test_run (void)
 			class = job_class_new (NULL, "test", NULL);
 			class->console = CONSOLE_NONE;
 			class->process[PROCESS_MAIN] = process_new (class);
+			class->process[PROCESS_MAIN]->script = FALSE;
 			class->process[PROCESS_MAIN]->command = filename;
 
 			job = job_new (class, "foo");
@@ -3054,7 +3068,7 @@ test_run (void)
 	TEST_NE_P (output, NULL);
 
 	TEST_TRUE (fgets (buffer, sizeof(buffer), output));
-	TEST_EQ (fnmatch ("*sh*/this/command/does/not/exist*not found*", buffer, 0), 0);
+	TEST_STR_MATCH (buffer, "*sh:*/this/command/does/not/exist:*");
 
 	TEST_FILE_END (output);
 	fclose (output);
@@ -3541,7 +3555,7 @@ test_run (void)
 	TEST_NE_P (output, NULL);
 
 	TEST_TRUE (fgets (buffer, sizeof(buffer), output));
-	TEST_EQ (fnmatch ("/proc/self/fd/9*/this/command/does/not/exist*not found*", buffer, 0), 0);
+	TEST_STR_MATCH (buffer, "/proc/self/fd/9*/this/command/does/not/exist:*");
 
 	TEST_FILE_END (output);
 	fclose (output);
@@ -4007,6 +4021,74 @@ test_run (void)
 	}
 
 	/************************************************************/
+
+	/* Check that initgroups gets called.
+	 * The test will run a job as nobody/nogroup (setuid/setgid) target.
+	 *
+	 * When run from an unprivileged user, the check will ensure that upstart
+	 * fails to start the job (returning -1) as initgroups() is a privileged
+	 * call (similar to setuid and setgid).
+	 *
+	 * When run from a privileged user (root), the check will ensure that
+	 * upstart succeeds in dropping privileges, which includes calling
+	 * initgroup, setuid and setgid.
+	 *
+	 * If the test is started by user nobody/nogroup, then it'll succeed as
+	 * there's no privilege changes to be done in such case (same uid/gid).
+	 */
+	TEST_FEATURE ("with setuid");
+	TEST_HASH_EMPTY (job_classes);
+
+	TEST_NE_P (output, NULL);
+	TEST_ALLOC_FAIL {
+		TEST_ALLOC_SAFE {
+			class = job_class_new (NULL, "test", NULL);
+			class->process[PROCESS_MAIN] = process_new (class);
+			class->process[PROCESS_MAIN]->command = nih_sprintf (
+				class->process[PROCESS_MAIN],
+				"touch %s", filename);
+
+			pwd = getpwnam ("nobody");
+			TEST_NE (pwd, NULL);
+			class->setuid = nih_strdup (class, pwd->pw_name);
+
+			grp = getgrnam ("nogroup");
+			TEST_NE (grp, NULL);
+			class->setgid = nih_strdup (class, grp->gr_name);
+
+			job = job_new (class, "");
+			job->goal = JOB_START;
+			job->state = JOB_SPAWNED;
+
+			output = tmpfile ();
+		}
+
+		TEST_DIVERT_STDERR (output) {
+			ret = job_process_run (job, PROCESS_MAIN);
+			if (geteuid() == 0 || getuid() == pwd->pw_uid) {
+				TEST_EQ (ret, 0);
+			}
+			else {
+				TEST_EQ (ret, -1);
+			}
+		}
+
+		if (geteuid() == 0 || getuid() == pwd->pw_uid) {
+			TEST_NE (job->pid[PROCESS_MAIN], 0);
+
+			waitpid (job->pid[PROCESS_MAIN], NULL, 0);
+			TEST_EQ (stat (filename, &statbuf), 0);
+		}
+		else {
+			TEST_EQ (stat (filename, &statbuf), -1);
+		}
+
+		unlink (filename);
+		nih_free (class);
+
+	}
+
+	/************************************************************/
 	TEST_FEATURE ("with multiple processes and log");
 	TEST_HASH_EMPTY (job_classes);
 
@@ -4354,8 +4436,8 @@ test_spawn (void)
 	waitpid (pid, NULL, 0);
 	output = fopen (filename, "r");
 
-	TEST_FILE_EQ (output, "PATH=/bin\n");
 	TEST_FILE_EQ (output, "FOO=bar\n");
+	TEST_FILE_EQ (output, "PATH=/bin\n");
 	TEST_FILE_EQ (output, "UPSTART_NO_SESSIONS=1\n");
 	TEST_FILE_END (output);
 
@@ -4514,96 +4596,6 @@ test_spawn (void)
 	waitpid (pid, &status, 0);
 	TEST_TRUE (WIFEXITED (status));
 	TEST_EQ (WEXITSTATUS (status), 0);
-
-	nih_free (class);
-
-	/* Check that when the job process is execed that no unexpected
-	 * signals are blocked or ignored.
-	 */
-	TEST_FEATURE ("ensure sane signal state with no console");
-	TEST_HASH_EMPTY (job_classes);
-
-	sprintf (function, "%d", TEST_SIGNALS);
-
-	args[0] = argv0;
-	args[1] = function;
-	args[2] = filename;
-	args[3] = NULL;
-
-	class = job_class_new (NULL, "test", NULL);
-	class->console = CONSOLE_NONE;
-	job = job_new (class, "");
-
-	pid = job_process_spawn (job, args, NULL, FALSE, -1, PROCESS_MAIN);
-	TEST_GT (pid, 0);
-
-	waitpid (pid, NULL, 0);
-	output = fopen (filename, "r");
-
-	TEST_NE_P (output, NULL);
-
-	{
-		unsigned long int value;
-
-		/* No signals should be blocked */
-		TEST_TRUE (fgets (filebuf, sizeof(filebuf), output));
-		TEST_EQ (sscanf (filebuf, "SigBlk: %lx", &value), 1);
-		TEST_EQ (value, 0x0);
-
-		/* No signals should be ignored */
-		TEST_TRUE (fgets (filebuf, sizeof(filebuf), output));
-		TEST_EQ (sscanf (filebuf, "SigIgn: %lx", &value), 1);
-		TEST_EQ (value, 0x0);
-
-		TEST_FILE_END (output);
-	}
-
-	fclose (output);
-	assert0 (unlink (filename));
-
-	nih_free (class);
-
-	/********************************************************************/
-	TEST_FEATURE ("ensure sane signal state with log console");
-	TEST_HASH_EMPTY (job_classes);
-
-	sprintf (function, "%d", TEST_SIGNALS);
-
-	args[0] = argv0;
-	args[1] = function;
-	args[2] = filename;
-	args[3] = NULL;
-
-	class = job_class_new (NULL, "test", NULL);
-	class->console = CONSOLE_LOG;
-	job = job_new (class, "");
-
-	pid = job_process_spawn (job, args, NULL, FALSE, -1, PROCESS_MAIN);
-	TEST_GT (pid, 0);
-
-	waitpid (pid, NULL, 0);
-	output = fopen (filename, "r");
-
-	TEST_NE_P (output, NULL);
-
-	{
-		unsigned long int value;
-
-		/* No signals should be blocked */
-		TEST_TRUE (fgets (filebuf, sizeof(filebuf), output));
-		TEST_EQ (sscanf (filebuf, "SigBlk: %lx", &value), 1);
-		TEST_EQ (value, 0x0);
-
-		/* No signals should be ignored */
-		TEST_TRUE (fgets (filebuf, sizeof(filebuf), output));
-		TEST_EQ (sscanf (filebuf, "SigIgn: %lx", &value), 1);
-		TEST_EQ (value, 0x0);
-
-		TEST_FILE_END (output);
-	}
-
-	fclose (output);
-	assert0 (unlink (filename));
 
 	nih_free (class);
 
@@ -4886,11 +4878,21 @@ test_spawn (void)
 			assert0 (unlink (script));
 		} else {
 			TEST_GT (pid, 0);
+			TEST_EQ (waitpid (pid, &status, 0), pid);
 		}
 
 		TEST_ALLOC_SAFE {
 			/* May alloc space if there is log data */
 			nih_free (class);
+			TEST_GT (sprintf (filename, "%s/simple-test.log", dirname), 0);
+			if (!test_alloc_failed) {
+				output = fopen (filename, "r");
+				TEST_NE_P (output, NULL);
+				CHECK_FILE_EQ (output, "hello world\r\n", TRUE);
+				TEST_FILE_END (output);
+				TEST_EQ (fclose (output), 0);
+			}
+			unlink (filename);
 		}
 	}
 
@@ -5431,7 +5433,7 @@ test_kill (void)
 
 		nih_free (job->kill_timer);
 		job->kill_timer = NULL;
-		job->kill_process = -1;
+		job->kill_process = PROCESS_INVALID;
 
 		nih_free (job);
 
@@ -5501,7 +5503,7 @@ test_kill (void)
 		TEST_EQ (WTERMSIG (status), SIGKILL);
 
 		TEST_EQ_P (job->kill_timer, NULL);
-		TEST_EQ (job->kill_process, (ProcessType)-1);
+		TEST_EQ (job->kill_process, PROCESS_INVALID);
 
 		nih_free (job);
 
@@ -5578,7 +5580,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 999, NIH_CHILD_EXITED, 0);
@@ -5598,7 +5600,7 @@ test_handler (void)
 		TEST_EQ_P (job->blocker, NULL);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -5629,7 +5631,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -5660,7 +5662,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -5694,7 +5696,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_ALLOC_SAFE {
@@ -5745,7 +5747,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_ALLOC_SAFE {
@@ -5761,7 +5763,7 @@ test_handler (void)
 		TEST_FREE (timer);
 
 		TEST_EQ_P (job->kill_timer, NULL);
-		TEST_EQ (job->kill_process, (ProcessType)-1);
+		TEST_EQ (job->kill_process, PROCESS_INVALID);
 
 		TEST_EQ (job->goal, JOB_START);
 		TEST_EQ (job->state, JOB_STARTING);
@@ -5789,7 +5791,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -5824,7 +5826,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -5845,7 +5847,7 @@ test_handler (void)
 		TEST_FREE (blocked);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -5883,7 +5885,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -5957,7 +5959,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -6035,7 +6037,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -6074,8 +6076,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		TEST_FILE_EQ (output, ("test: test main process (1) "
 				       "terminated with status 1\n"));
@@ -6122,7 +6125,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -6161,8 +6164,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		TEST_FILE_EQ (output, ("test: test main process (1) "
 				       "terminated with status 1\n"));
@@ -6211,7 +6215,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -6245,8 +6249,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, TRUE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		TEST_FILE_EQ (output, ("test: test respawning too fast, "
 				       "stopped\n"));
@@ -6287,7 +6292,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 100);
@@ -6318,8 +6323,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		nih_free (job);
 	}
@@ -6356,7 +6362,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -6395,8 +6401,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		TEST_FILE_EQ (output, ("test: test main process ended, "
 				       "respawning\n"));
@@ -6436,7 +6443,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -6467,8 +6474,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		nih_free (job);
 	}
@@ -6503,7 +6511,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -6574,7 +6582,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_FREE_TAG (job);
@@ -6625,7 +6633,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 100);
@@ -6656,7 +6664,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -6693,7 +6701,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -6727,7 +6735,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		TEST_FILE_EQ (output, ("test: test main process (1) "
@@ -6765,7 +6773,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -6796,7 +6804,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -6829,7 +6837,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_FREE_TAG (job);
@@ -6874,7 +6882,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_FREE_TAG (job);
@@ -6983,7 +6991,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7005,7 +7013,7 @@ test_handler (void)
 		TEST_FREE (blocked);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		TEST_FILE_EQ (output, ("test: test post-start process (2) "
@@ -7047,7 +7055,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -7078,7 +7086,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -7117,7 +7125,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -7138,7 +7146,7 @@ test_handler (void)
 		event_unblock (event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -7177,7 +7185,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -7197,7 +7205,7 @@ test_handler (void)
 		TEST_EQ_P (blocked->event, event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		job_process_handler (NULL, 2, NIH_CHILD_EXITED, 0);
@@ -7229,7 +7237,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -7268,7 +7276,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7368,7 +7376,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7391,7 +7399,7 @@ test_handler (void)
 		TEST_EQ_P (blocked->event, event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		job_process_handler (NULL, 2, NIH_CHILD_EXITED, 0);
@@ -7428,8 +7436,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		TEST_FILE_EQ (output, ("test: test main process ended, "
 				       "respawning\n"));
@@ -7474,7 +7483,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7509,7 +7518,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		TEST_FILE_EQ (output, ("test: test pre-stop process (2) "
@@ -7551,7 +7560,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -7582,7 +7591,7 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -7620,7 +7629,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
@@ -7641,7 +7650,7 @@ test_handler (void)
 		event_unblock (event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -7684,7 +7693,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7707,7 +7716,7 @@ test_handler (void)
 		TEST_EQ_P (blocked->event, event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		job_process_handler (NULL, 2, NIH_CHILD_EXITED, 0);
@@ -7744,8 +7753,9 @@ test_handler (void)
 		TEST_LIST_EMPTY (&job->blocker->blocking);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
+		TEST_EQ (job->class->process[PROCESS_MAIN]->script, FALSE);
 
 		TEST_FILE_EQ (output, ("test: test main process ended, "
 				       "respawning\n"));
@@ -7760,6 +7770,109 @@ test_handler (void)
 
 	class->respawn = FALSE;
 
+
+	/* Check that we don't respawn the job if the running process exits
+	 * before the pre-stop process finishes if we were going to stop the
+	 * running proecss anyway.
+	 */
+	TEST_FEATURE ("with respawn of to be stopped while pre-stop process");
+	class->respawn = TRUE;
+	class->respawn_limit = 5;
+	class->respawn_interval = 10;
+
+	class->process[PROCESS_PRE_STOP] = process_new (class);
+	class->process[PROCESS_PRE_STOP]->command = "echo";
+
+	TEST_ALLOC_FAIL {
+		TEST_ALLOC_SAFE {
+			job = job_new (class, "");
+
+			blocked = blocked_new (job, BLOCKED_EVENT, event);
+			event_block (event);
+			nih_list_add (&job->blocking, &blocked->entry);
+		}
+
+		job->goal = JOB_STOP;
+		job->state = JOB_PRE_STOP;
+		job->pid[PROCESS_MAIN] = 1;
+		job->pid[PROCESS_PRE_STOP] = 2;
+
+		TEST_FREE_TAG (blocked);
+
+		job->blocker = NULL;
+		event->failed = FALSE;
+
+		job->failed = FALSE;
+		job->failed_process = -1;
+		job->exit_status = 0;
+
+		TEST_DIVERT_STDERR (output) {
+			job_process_handler (NULL, 1, NIH_CHILD_EXITED, 0);
+		}
+		rewind (output);
+
+		TEST_EQ (job->goal, JOB_STOP);
+		TEST_EQ (job->state, JOB_PRE_STOP);
+		TEST_EQ (job->pid[PROCESS_MAIN], 0);
+		TEST_EQ (job->pid[PROCESS_PRE_STOP], 2);
+
+		TEST_EQ (event->blockers, 1);
+		TEST_EQ (event->failed, FALSE);
+
+		TEST_EQ_P (job->blocker, NULL);
+
+		TEST_LIST_NOT_EMPTY (&job->blocking);
+		TEST_NOT_FREE (blocked);
+		TEST_EQ_P (blocked->event, event);
+
+		TEST_EQ (job->failed, FALSE);
+		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->exit_status, 0);
+
+		job_process_handler (NULL, 2, NIH_CHILD_EXITED, 0);
+
+		TEST_EQ (job->goal, JOB_STOP);
+		TEST_EQ (job->state, JOB_STOPPING);
+		TEST_EQ (job->pid[PROCESS_MAIN], 0);
+		TEST_EQ (job->pid[PROCESS_PRE_STOP], 0);
+
+		TEST_EQ (job->respawn_count, 0);
+
+		TEST_EQ (event->blockers, 1);
+		TEST_EQ (event->failed, FALSE);
+
+		TEST_LIST_NOT_EMPTY (&job->blocking);
+		TEST_NOT_FREE (blocked);
+		TEST_EQ_P (blocked->event, event);
+		event_unblock (event);
+
+		TEST_NE_P (job->blocker, NULL);
+
+		TEST_LIST_NOT_EMPTY (&job->blocker->blocking);
+
+		blocked = (Blocked *)job->blocker->blocking.next;
+		TEST_ALLOC_SIZE (blocked, sizeof (Blocked));
+		TEST_ALLOC_PARENT (blocked, job->blocker);
+		TEST_EQ (blocked->type, BLOCKED_JOB);
+		TEST_EQ_P (blocked->job, job);
+		nih_free (blocked);
+
+		TEST_LIST_EMPTY (&job->blocker->blocking);
+
+		TEST_EQ (job->failed, FALSE);
+		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->exit_status, 0);
+
+		TEST_FILE_END (output);
+		TEST_FILE_RESET (output);
+
+		nih_free (job);
+	}
+
+	nih_free (class->process[PROCESS_PRE_STOP]);
+	class->process[PROCESS_PRE_STOP] = NULL;
+
+	class->respawn = FALSE;
 
 	/* Check that a running task that exits while we're waiting for
 	 * the stopping event to finish does not change the state or
@@ -7788,7 +7901,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7811,7 +7924,7 @@ test_handler (void)
 		TEST_EQ_P (job->blocker, bevent);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -7861,7 +7974,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7892,7 +8005,7 @@ test_handler (void)
 		event_unblock (event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -7934,7 +8047,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -7965,7 +8078,7 @@ test_handler (void)
 		event_unblock (event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -8004,7 +8117,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -8034,7 +8147,7 @@ test_handler (void)
 		event_unblock (event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -8048,6 +8161,7 @@ test_handler (void)
 	class->expect = EXPECT_STOP;
 
 	TEST_ALLOC_FAIL {
+		pid_t tmp_pid;
 		TEST_ALLOC_SAFE {
 			job = job_new (class, "");
 
@@ -8061,7 +8175,10 @@ test_handler (void)
 			exit (0);
 		}
 
-		assert0 (waitid (P_PID, pid, &info, WSTOPPED | WNOWAIT));
+		tmp_pid = waitid (P_PID, pid, &info, WSTOPPED | WNOWAIT);
+		if (tmp_pid < 0)
+			printf("waitid failed: %m");
+		assert0 (tmp_pid);
 
 		job->goal = JOB_START;
 		job->state = JOB_SPAWNED;
@@ -8073,7 +8190,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -8103,7 +8220,7 @@ test_handler (void)
 		event_unblock (event);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -8145,7 +8262,7 @@ test_handler (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		TEST_DIVERT_STDERR (output) {
@@ -8171,7 +8288,7 @@ test_handler (void)
 		TEST_FREE (blocked);
 
 		TEST_EQ (job->failed, FALSE);
-		TEST_EQ (job->failed_process, (ProcessType)-1);
+		TEST_EQ (job->failed_process, PROCESS_INVALID);
 		TEST_EQ (job->exit_status, 0);
 
 		nih_free (job);
@@ -8880,7 +8997,7 @@ test_utmp (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		output = fopen (utmpname, "w");
@@ -8945,7 +9062,7 @@ test_utmp (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		output = fopen (utmpname, "w");
@@ -9013,7 +9130,7 @@ test_utmp (void)
 		event->failed = FALSE;
 
 		job->failed = FALSE;
-		job->failed_process = -1;
+		job->failed_process = PROCESS_INVALID;
 		job->exit_status = 0;
 
 		output = fopen (utmpname, "w");
@@ -9128,8 +9245,20 @@ io_error_handler (void   *data,
 	nih_free (err);
 
 	nih_free (io);
-	nih_main_loop_exit (EXIT_SUCCESS);
 }
+
+/* Grab child exit status and ask main loop to exit */
+void
+process_handler (void          *data,
+		pid_t           pid,
+		NihChildEvents  event,
+		int             status)
+{
+	nih_assert (pid == pty_child_pid);
+
+	nih_main_loop_exit (status);
+}
+
 
 /**
  * run_tests_in_pty:
@@ -9150,21 +9279,18 @@ io_error_handler (void   *data,
 void
 run_tests_in_pty (void)
 {
-	pid_t             pid;
 	int               pty_master;
 	int               pty_slave;
 	nih_local NihIo  *io = NULL;
 	int               ret;
-	int               status;
-	int               exit_status = 0;
 
 	ret = openpty (&pty_master, &pty_slave, NULL, NULL, NULL);
 	TEST_NE (ret, -1);
 
-	pid = fork ();
-	TEST_NE (pid, (pid_t)-1);
+	pty_child_pid = fork ();
+	TEST_NE (pty_child_pid, (pid_t)-1);
 
-	if (! pid) {
+	if (! pty_child_pid) {
 		int   i;
 		pid_t self;
 
@@ -9180,7 +9306,7 @@ run_tests_in_pty (void)
 
 		/* connect standard streams to the child end of the pty */
 		for (i = 0; i < 3; i++)
-			while (dup2(pty_slave, i) == -1 && errno == EBUSY)
+			while (dup2 (pty_slave, i) == -1 && errno == EBUSY)
 				;
 
 		/* clean up */
@@ -9202,17 +9328,14 @@ run_tests_in_pty (void)
 			io_error_handler, NULL);
 	TEST_NE_P (io, NULL);
 
-	/* wait for child to finish */
-	TEST_EQ (waitpid (pid, &status, 0), pid);
-
-	/* catch exit status if it failed and return it via parent */
-	exit_status = WIFEXITED (status) ? WEXITSTATUS (status) :
-		      WIFSIGNALED (status) ? WTERMSIG (status) :
-		      WIFSTOPPED (status) ?  WSTOPSIG (status) :
-		      EXIT_FAILURE;
+	/* Watch child for events */
+	NIH_MUST (nih_child_add_watch (NULL, pty_child_pid,
+				(NIH_CHILD_EXITED|NIH_CHILD_KILLED|NIH_CHILD_DUMPED),
+				process_handler, NULL)); 
 
 	ret = nih_main_loop ();
-	exit (exit_status ? exit_status : ret);
+
+	exit (ret ? EXIT_FAILURE : EXIT_SUCCESS);
 }
 
 /**
@@ -9252,9 +9375,12 @@ main (int   argc,
 	 */
 	argv0 = argv[0];
 	if (argv0[0] != '/') {
-		char path[PATH_MAX];
+#ifdef TEST_PLAN
+		TEST_PLAN(153);
+#endif
+		char *path = nih_alloc (NULL, PATH_MAX);
 
-		assert (getcwd (path, sizeof (path)));
+		assert (getcwd (path, PATH_MAX));
 		strcat (path, "/");
 		strcat (path, argv0);
 

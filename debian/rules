@@ -15,13 +15,42 @@ endif
 export DEB_BUILD_MAINT_OPTIONS DEB_LDFLAGS_MAINT_APPEND DEB_CFLAGS_MAINT_APPEND
 
 %:
-	dh $@ --with bash-completion --with autoreconf
+	dh $@ --with bash-completion,autoreconf,python3 --parallel
 
 override_dh_auto_configure:
-	dh_auto_configure -- --exec-prefix=
+	dh_auto_configure -- --exec-prefix= --enable-selinux \
+		--disable-silent-rules --disable-abi-check
 
 override_dh_fixperms:
 	dh_fixperms
 	chmod 755 debian/upstart/lib/init/upstart-job
 	chmod 755 debian/upstart/lib/init/apparmor-profile-load
-	chmod 755 debian/upstart/usr/lib/upstart/migrate-inittab.pl
+
+override_dh_auto_install:
+	dh_auto_install -- pkgconfigdir=\$${libdir}/pkgconfig
+
+# Remove the appropriate dconf files from the upstart package - they
+# will be added used by the upstart-dconf-bridge.install file.
+override_dh_install:
+	dh_install
+	install -m 644 debian/upstart.apport \
+		debian/upstart/usr/share/apport/package-hooks/upstart.py
+	rm debian/upstart/sbin/upstart-dconf-bridge
+	rm debian/upstart/usr/share/upstart/sessions/upstart-dconf-bridge.conf
+	rm debian/upstart/etc/init/upstart-event-bridge.conf
+	rm debian/upstart/etc/init/upstart-dbus-bridge.conf
+
+# Remove the following man pages from the upstart package; they will be
+# added to the upstart-monitor and upstart-dconf-bridge packages via
+# their .manpages files, but removing the files here is simpler than
+# specifying every other section 8 manpage in the upstart packages
+# .manpages file.
+override_dh_installman:
+	dh_installman
+	rm debian/upstart/usr/share/man/man8/upstart-monitor.8*
+	rm debian/upstart/usr/share/man/man8/upstart-dconf-bridge.8*
+	rm debian/upstart/usr/share/man/man7/dconf-event.7*
+
+override_dh_shlibdeps:
+	dh_shlibdeps -pupstart -- -dPre-Depends debian/upstart/sbin/runlevel -dDepends
+	dh_shlibdeps -Nupstart

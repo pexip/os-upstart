@@ -102,11 +102,11 @@ typedef enum console_type {
 #define JOB_DEFAULT_UMASK 022
 
 /**
- * JOB_DEFAULT_NICE:
+ * JOB_NICE_INVALID:
  *
- * The default nice level for processes.
+ * The nice level for processes when no nice level is set.
  **/
-#define JOB_DEFAULT_NICE 0
+#define JOB_NICE_INVALID -21
 
 /**
  * JOB_DEFAULT_OOM_SCORE_ADJ:
@@ -148,6 +148,7 @@ typedef enum console_type {
  * @task: start requests are not unblocked until instances have finished,
  * @kill_timeout: time to wait between sending TERM and KILL signals,
  * @kill_signal: first signal to send (usually SIGTERM),
+ * @reload_signal: reload signal to send (usually SIGHUP),
  * @respawn: instances should be restarted if main process fails,
  * @respawn_limit: number of respawns in @respawn_interval that we permit,
  * @respawn_interval: barrier for @respawn_limit,
@@ -164,6 +165,7 @@ typedef enum console_type {
  * @setgid: group name to drop to before starting process,
  * @deleted: whether job should be deleted when finished.
  * @usage: usage text - how to control job
+ * @apparmor_switch: AppArmor profile to switch to before starting job
  *
  * This structure holds the configuration of a known task or service that
  * should be tracked by the init daemon; as tasks and services are
@@ -196,7 +198,9 @@ typedef struct job_class {
 	int             task;
 
 	time_t          kill_timeout;
-	int		kill_signal;
+	int             kill_signal;
+
+	int             reload_signal;
 
 	int             respawn;
 	int             respawn_limit;
@@ -220,23 +224,41 @@ typedef struct job_class {
 	int             debug;
 
 	char           *usage;
+
+	char	       *apparmor_switch;
 } JobClass;
 
 
 NIH_BEGIN_EXTERN
 
-extern NihHash *job_classes;
-
+extern NihHash  *job_classes;
 
 void        job_class_init                 (void);
+
+void        job_class_environment_init     (void);
+
+void        job_class_environment_reset    (void);
+
+void        job_class_environment_clear    (void);
+
+int         job_class_environment_set      (const char *var, int replace);
+int         job_class_environment_unset    (const char *name);
+
+char **     job_class_environment_get_all  (const void *parent)
+	__attribute__ ((warn_unused_result));
+
+const char *job_class_environment_get      (const char *name)
+	__attribute__ ((warn_unused_result));
 
 JobClass  * job_class_new                  (const void *parent,
 					    const char *name,
 					    Session *session)
-	__attribute__ ((warn_unused_result, malloc));
+	__attribute__ ((warn_unused_result));
 
 int         job_class_consider             (JobClass *class);
 int         job_class_reconsider           (JobClass *class);
+
+void        job_class_add_safe             (JobClass *class);
 
 void        job_class_register             (JobClass *class,
 					    DBusConnection *conn, int signal);
@@ -245,7 +267,7 @@ void        job_class_unregister           (JobClass *class,
 
 char      **job_class_environment          (const void *parent,
 					    JobClass *class, size_t *len)
-	__attribute__ ((warn_unused_result, malloc));
+	__attribute__ ((warn_unused_result));
 
 
 int         job_class_get_instance         (JobClass *class,
@@ -306,7 +328,58 @@ int         job_class_get_usage	           (JobClass *class,
 					    NihDBusMessage *message,
 					    char **usage);
 
+const char *
+job_class_console_type_enum_to_str (ConsoleType console)
+	__attribute__ ((warn_unused_result));
+
+ConsoleType
+job_class_console_type_str_to_enum (const char *name)
+	__attribute__ ((warn_unused_result));
+
+const char *
+job_class_expect_type_enum_to_str (ExpectType expect)
+	__attribute__ ((warn_unused_result));
+
+ExpectType
+job_class_expect_type_str_to_enum (const char *name)
+	__attribute__ ((warn_unused_result));
+
 ConsoleType job_class_console_type         (const char *console)
+	__attribute__ ((warn_unused_result));
+
+json_object *job_class_serialise (const JobClass *class)
+	__attribute__ ((warn_unused_result));
+
+JobClass *job_class_deserialise (json_object *json)
+	__attribute__ ((warn_unused_result));
+
+json_object * job_class_serialise_all (void)
+	__attribute__ ((warn_unused_result));
+
+int job_class_deserialise_all (json_object *json)
+	__attribute__ ((warn_unused_result));
+
+JobClass * job_class_get (const char *name, Session *session)
+	__attribute__ ((warn_unused_result));
+
+json_object * job_class_serialise_job_environ (void)
+	__attribute__ ((warn_unused_result));
+
+int job_class_deserialise_job_environ (json_object *json)
+	__attribute__ ((warn_unused_result));
+
+void job_class_prepare_reexec (void);
+
+time_t     job_class_max_kill_timeout (void)
+	__attribute__ ((warn_unused_result));
+
+JobClass  *job_class_get_registered (const char *name, const Session *session)
+	__attribute__ ((warn_unused_result));
+
+void       job_class_event_block (void *parent, JobClass *old, JobClass *new);
+
+ssize_t
+job_class_get_index (const JobClass *class)
 	__attribute__ ((warn_unused_result));
 
 NIH_END_EXTERN
