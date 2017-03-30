@@ -37,7 +37,6 @@
 #include <nih/string.h>
 #include <nih/list.h>
 #include <nih/signal.h>
-#include <nih/config.h>
 #include <nih/logging.h>
 #include <nih/error.h>
 
@@ -46,6 +45,7 @@
 #include "event.h"
 #include "parse_job.h"
 #include "errors.h"
+#include "apparmor.h"
 
 
 /* Prototypes for static functions */
@@ -68,7 +68,7 @@ static EventOperator *parse_on          (JobClass *class,
 					 NihConfigStanza *stanza,
 					 const char *file, size_t len,
 					 size_t *pos, size_t *lineno)
-	__attribute__ ((warn_unused_result, malloc));
+	__attribute__ ((warn_unused_result));
 static int            parse_on_operator (JobClass *class,
 					 NihConfigStanza *stanza,
 					 const char *file, size_t len,
@@ -171,6 +171,16 @@ static int stanza_kill        (JobClass *class, NihConfigStanza *stanza,
 			       size_t *pos, size_t *lineno)
 	__attribute__ ((warn_unused_result));
 
+static int stanza_reload      (JobClass *class, NihConfigStanza *stanza,
+			       const char *file, size_t len,
+			       size_t *pos, size_t *lineno)
+	__attribute__ ((warn_unused_result));
+
+static int stanza_apparmor    (JobClass *class, NihConfigStanza *stanza,
+			       const char *file, size_t len,
+			       size_t *pos, size_t *lineno)
+	__attribute__ ((warn_unused_result));
+
 static int stanza_respawn     (JobClass *class, NihConfigStanza *stanza,
 			       const char *file, size_t len,
 			       size_t *pos, size_t *lineno)
@@ -257,6 +267,7 @@ static NihConfigStanza stanzas[] = {
 	{ "expect",      (NihConfigHandler)stanza_expect      },
 	{ "task",        (NihConfigHandler)stanza_task        },
 	{ "kill",        (NihConfigHandler)stanza_kill        },
+	{ "reload",      (NihConfigHandler)stanza_reload      },
 	{ "respawn",     (NihConfigHandler)stanza_respawn     },
 	{ "normal",      (NihConfigHandler)stanza_normal      },
 	{ "console",     (NihConfigHandler)stanza_console     },
@@ -271,6 +282,7 @@ static NihConfigStanza stanzas[] = {
 	{ "debug",       (NihConfigHandler)stanza_debug       },
 	{ "manual",      (NihConfigHandler)stanza_manual      },
 	{ "usage",       (NihConfigHandler)stanza_usage       },
+	{ "apparmor",    (NihConfigHandler)stanza_apparmor    },
 
 	NIH_CONFIG_LAST
 };
@@ -620,6 +632,48 @@ finish:
 	*pos = on_pos;
 	if (lineno)
 		*lineno = on_lineno;
+
+	return root;
+}
+
+/**
+ * parse_on_simple:
+ * @class: job class being parsed,
+ * @stanza_name: name of stanza type to parse ("start" or "stop"),
+ * @string: string to parse.
+ *
+ * Parse either a "start" or "stop" condition from @string (which must
+ * start with the first byte beyond either "start on" or "stop on".
+ *
+ * Returns: EventOperator at root of expression tree on success, NULL
+ * on raised error.
+ **/
+EventOperator *
+parse_on_simple (JobClass *class, const char *stanza_name, const char *string)
+{
+	EventOperator    *root = NULL;
+	NihConfigStanza  *stanza = NULL;
+	size_t            pos = 0;
+	size_t            lineno = 0;
+	size_t            len;
+
+	nih_assert (class);
+	nih_assert (stanza_name);
+	nih_assert (string);
+
+	/* Find the appropriate config stanza */
+	for (NihConfigStanza *s = stanzas; s->name; s++) {
+		if (! strcmp (stanza_name, s->name)) {
+			stanza = s;
+			break;
+		}
+	}
+
+	nih_assert (stanza);
+
+	len = strlen (string);
+
+	root = parse_on (class, stanza, string, len, &pos, &lineno);
 
 	return root;
 }
@@ -1869,6 +1923,8 @@ stanza_kill (JobClass        *class,
 			if (errno || *endptr || (status > INT_MAX))
 				nih_return_error (-1, PARSE_ILLEGAL_SIGNAL,
 						  _(PARSE_ILLEGAL_SIGNAL_STR));
+
+			signal = status;
 		}
 
 		/* Set the signal */
@@ -1888,6 +1944,194 @@ finish:
 	return ret;
 }
 
+
+/**
+ * stanza_reload:
+ * @class: job class being parsed,
+ * @stanza: stanza found,
+ * @file: file or string to parse,
+ * @len: length of @file,
+ * @pos: offset within @file,
+ * @lineno: line number.
+ *
+ * Parse a reload stanza from @file, extracting a second-level stanza that
+ * states which value to set from its argument.
+ *
+ * Returns: zero on success, negative value on error.
+ **/
+static int
+stanza_reload (JobClass        *class,
+	       NihConfigStanza *stanza,
+	       const char      *file,
+	       size_t           len,
+	       size_t          *pos,
+	       size_t          *lineno)
+{
+	size_t          a_pos, a_lineno;
+	int             ret = -1;
+	char           *endptr;
+	nih_local char *arg = NULL;
+
+	nih_assert (class != NULL);
+	nih_assert (stanza != NULL);
+	nih_assert (file != NULL);
+	nih_assert (pos != NULL);
+
+	a_pos = *pos;
+	a_lineno = (lineno ? *lineno : 1);
+
+	arg = nih_config_next_token (NULL, file, len, &a_pos, &a_lineno,
+				     NIH_CONFIG_CNLWS, FALSE);
+	if (! arg)
+		goto finish;
+
+	if (! strcmp (arg, "signal")) {
+		unsigned long   status;
+		nih_local char *sigarg = NULL;
+		int		signal;
+
+		/* Update error position to the exit status */
+		*pos = a_pos;
+		if (lineno)
+			*lineno = a_lineno;
+
+		sigarg = nih_config_next_arg (NULL, file, len, &a_pos,
+					      &a_lineno);
+
+		if (! sigarg)
+			goto finish;
+
+		signal = nih_signal_from_name (sigarg);
+		if (signal < 0) {
+			errno = 0;
+			status = strtoul (sigarg, &endptr, 10);
+			if (errno || *endptr || (status > INT_MAX))
+				nih_return_error (-1, PARSE_ILLEGAL_SIGNAL,
+						  _(PARSE_ILLEGAL_SIGNAL_STR));
+
+			signal = status;
+		}
+
+		/* Set the signal */
+		class->reload_signal = signal;
+	} else {
+		nih_return_error (-1, NIH_CONFIG_UNKNOWN_STANZA,
+				  _(NIH_CONFIG_UNKNOWN_STANZA_STR));
+	}
+
+	ret = nih_config_skip_comment (file, len, &a_pos, &a_lineno);
+
+finish:
+	*pos = a_pos;
+	if (lineno)
+		*lineno = a_lineno;
+
+	return ret;
+}
+
+
+/**
+ * stanza_apparmor:
+ * @class: job class being parsed,
+ * @stanza: stanza found,
+ * @file: file or string to parse,
+ * @len: length of @file,
+ * @pos: offset within @file,
+ * @lineno: line number.
+ *
+ * Parse an apparmor stanza from @file, extracting a second-level stanza that
+ * states which value to set from its argument.
+ *
+ * Returns: zero on success, negative value on error.
+ **/
+static int
+stanza_apparmor (JobClass        *class,
+		 NihConfigStanza *stanza,
+		 const char      *file,
+		 size_t           len,
+		 size_t          *pos,
+		 size_t          *lineno)
+{
+	size_t          a_pos, a_lineno;
+	int             ret = -1;
+	nih_local char *arg = NULL;
+	Process        *process;
+
+	nih_assert (class != NULL);
+	nih_assert (stanza != NULL);
+	nih_assert (file != NULL);
+	nih_assert (pos != NULL);
+
+	a_pos = *pos;
+	a_lineno = (lineno ? *lineno : 1);
+
+	arg = nih_config_next_token (NULL, file, len, &a_pos, &a_lineno,
+				     NIH_CONFIG_CNLWS, FALSE);
+	if (! arg)
+		goto finish;
+
+	if (! strcmp (arg, "load")) {
+		nih_local char *aaarg = NULL;
+
+		/* Update error position to the load value */
+		*pos = a_pos;
+		if (lineno)
+			*lineno = a_lineno;
+
+		aaarg = nih_config_next_arg (NULL, file, len,
+					     &a_pos, &a_lineno);
+
+		if (! aaarg)
+			goto finish;
+
+		/* Allocate a new Process structure if we need to */
+		if (! class->process[PROCESS_SECURITY]) {
+			class->process[PROCESS_SECURITY] = process_new (class->process);
+			if (! class->process[PROCESS_SECURITY])
+				nih_return_system_error (-1);
+		}
+
+		process = class->process[PROCESS_SECURITY];
+
+		if (process->command)
+			nih_unref (process->command, process);
+
+		process->script = FALSE;
+		process->command = nih_sprintf (process, "%s %s %s",
+						APPARMOR_PARSER,
+						APPARMOR_PARSER_OPTS,
+						aaarg);
+
+		if (! process->command)
+			nih_return_system_error (-1);
+
+	} else if (! strcmp (arg, "switch")) {
+		/* Update error position to the switch value */
+		*pos = a_pos;
+		if (lineno)
+			*lineno = a_lineno;
+
+		class->apparmor_switch = nih_config_next_arg (class, file,
+							      len, &a_pos,
+							      &a_lineno);
+
+		if (! class->apparmor_switch)
+			goto finish;
+
+	} else {
+		nih_return_error (-1, NIH_CONFIG_UNKNOWN_STANZA,
+				  _(NIH_CONFIG_UNKNOWN_STANZA_STR));
+	}
+
+	ret = nih_config_skip_comment (file, len, &a_pos, &a_lineno);
+
+finish:
+	*pos = a_pos;
+	if (lineno)
+		*lineno = a_lineno;
+
+	return ret;
+}
 
 /**
  * stanza_respawn:

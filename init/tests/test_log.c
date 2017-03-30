@@ -26,30 +26,13 @@
 #include <libgen.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
-#include <sys/prctl.h>
 #include <nih/test.h>
 #include <nih/timer.h>
 #include <nih/child.h>
 #include <nih/signal.h>
 #include <nih/main.h>
 #include "job.h"
-
-/* Force an inotify watch update */
-#define TEST_FORCE_WATCH_UPDATE()                                    \
-{                                                                    \
-	int         nfds = 0;                                        \
-	int         ret = 0;                                         \
-	fd_set      readfds, writefds, exceptfds;                    \
-	                                                             \
-	FD_ZERO (&readfds);                                          \
-	FD_ZERO (&writefds);                                         \
-	FD_ZERO (&exceptfds);                                        \
-	                                                             \
-	nih_io_select_fds (&nfds, &readfds, &writefds, &exceptfds);  \
-	ret = select (nfds, &readfds, &writefds, &exceptfds, NULL);  \
-	if (ret > 0)                                                 \
-		nih_io_handle_fds (&readfds, &writefds, &exceptfds); \
-}
+#include "test_util_common.h"
 
 /*
  * To help with understanding the TEST_ALLOC_FAIL peculiarities
@@ -254,7 +237,7 @@ test_log_new (void)
 		ret = write (pty_slave, "\n", 1);
 		TEST_EQ (ret, 1);
 
-		TEST_FORCE_WATCH_UPDATE ();
+		TEST_WATCH_UPDATE ();
 
 		/* Now handle all alloc failures where the alloc calls were
                  * initiated asynchronously by log_io_reader().
@@ -272,7 +255,7 @@ test_log_new (void)
 		}
 
 		close (pty_slave);
-		TEST_FORCE_WATCH_UPDATE ();
+		TEST_WATCH_UPDATE ();
 		ret = log_handle_unflushed (NULL, log);
 		TEST_EQ (ret, 1);
 		TEST_TRUE (NIH_LIST_EMPTY (log_unflushed_files));
@@ -320,7 +303,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\n", 1);
 	TEST_EQ (ret, 1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	TEST_EQ (stat (filename, &statbuf), 0);
 
@@ -348,7 +331,7 @@ test_log_new (void)
 	ret = write (pty_slave, str2, strlen (str2));
 	TEST_GT (ret, 0);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	TEST_EQ (stat (filename, &statbuf), 0);
 
@@ -398,7 +381,7 @@ test_log_new (void)
 	/* XXX: '+1' for '\r' */
 	bytes += (ret+1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	TEST_EQ (stat (filename, &statbuf), 0);
 
@@ -459,7 +442,7 @@ test_log_new (void)
 	/* '+1' for '\r' */
 	bytes += (1+ret);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	close (pty_slave);
 	nih_free (log);
@@ -505,7 +488,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\n", 1);
 	TEST_EQ (ret, 1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	TEST_EQ (stat (filename, &statbuf), 0);
 
@@ -556,7 +539,7 @@ test_log_new (void)
 	ret = write (pty_slave, "foo\n", 4);
 	TEST_EQ (ret, 4);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	close (pty_slave);
 	nih_free (log);
@@ -617,7 +600,7 @@ test_log_new (void)
 
 	close (pty_slave);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	/* Ensure no log file written */
 	TEST_LT (stat (filename, &statbuf), 0);
@@ -685,7 +668,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\n", 1);
 	TEST_EQ (ret, 1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	old_perms = umask (0);
 	TEST_EQ (mkdir (dirname, 0755), 0);
@@ -789,7 +772,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\n", 1);
 	TEST_EQ (ret, 1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	output = fopen (filename, "r");
 	TEST_NE_P (output, NULL);
@@ -824,7 +807,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\n", 1);
 	TEST_EQ (ret, 1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	output = fopen (filename, "r");
 	TEST_NE_P (output, NULL);
@@ -865,7 +848,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\000", 1);
 	TEST_EQ (ret, 1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	close (pty_slave);
 	nih_free (log);
@@ -909,7 +892,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\000\000\000", 3);
 	TEST_EQ (ret, 3);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	close (pty_slave);
 	nih_free (log);
@@ -953,7 +936,7 @@ test_log_new (void)
 	ret = write (pty_slave, " ", 1);
 	TEST_EQ (ret, 1);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	close (pty_slave);
 	nih_free (log);
@@ -997,7 +980,7 @@ test_log_new (void)
 	ret = write (pty_slave, "\n \t", 3);
 	TEST_EQ (ret, 3);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 
 	close (pty_slave);
 	nih_free (log);
@@ -1202,7 +1185,7 @@ test_log_destroy (void)
 	ret = write (pty_slave, str, strlen (str));
 	TEST_GT (ret, 0);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 	TEST_NE_P (log->unflushed, NULL);
 	TEST_EQ (log->unflushed->len, strlen(str));
 	TEST_EQ_STR (log->unflushed->buf, str);
@@ -1237,7 +1220,7 @@ test_log_destroy (void)
 	ret = write (pty_slave, str, strlen (str));
 	TEST_GT (ret, 0);
 
-	TEST_FORCE_WATCH_UPDATE ();
+	TEST_WATCH_UPDATE ();
 	TEST_NE_P (log->unflushed, NULL);
 	TEST_EQ (log->unflushed->len, strlen(str));
 	TEST_EQ_STR (log->unflushed->buf, str);
